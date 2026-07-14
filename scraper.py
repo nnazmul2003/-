@@ -1,15 +1,22 @@
 import os
 import time
+import threading
+from flask import Flask
 import requests
 from bs4 import BeautifulSoup
 
-# আপনার দেওয়া বটের টোকেন এবং চ্যাট আইডি সরাসরি যোগ করা হয়েছে
+# Flask অ্যাপ তৈরি (Render এর পোর্ট চেকিং সন্তুষ্ট করার জন্য)
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Scraper is running!", 200
+
+# আপনার দেওয়া বটের টোকেন এবং চ্যাট আইডি
 TELEGRAM_TOKEN = "8906640720:AAHq41Lna_ROMeLRoUAQ4liXMdzXTXm94kw"
 TELEGRAM_CHAT_ID = "6382850126" 
-
 URL = "http://tmed.gov.bd/pages/notices"
 
-# মেমোরিতে সর্বশেষ নোটিশের লিংক ধরে রাখার ভেরিয়েবল
 last_sent_link = None
 
 def get_latest_notices():
@@ -21,13 +28,11 @@ def get_latest_notices():
         response.encoding = 'utf-8'
         
         if response.status_code != 200:
-            print(f"Failed to fetch webpage. Status: {response.status_code}")
             return []
         
         soup = BeautifulSoup(response.text, "html.parser")
         table = soup.find("table")
         if not table:
-            print("Notice table not found.")
             return []
             
         rows = table.find_all("tr")[1:]
@@ -47,7 +52,7 @@ def get_latest_notices():
         
         return notices
     except Exception as e:
-        print(f"Error scraping website: {e}")
+        print(f"Error scraping: {e}")
         return []
 
 def send_telegram_message(message):
@@ -58,28 +63,24 @@ def send_telegram_message(message):
         "parse_mode": "Markdown"
     }
     try:
-        response = requests.post(telegram_url, json=payload, timeout=10)
-        if response.status_code != 200:
-            print(f"Telegram API Error: {response.text}")
+        requests.post(telegram_url, json=payload, timeout=10)
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
 
+# স্ক্র্যাপারের মূল লুপ (যা ব্যাকগ্রাউন্ডে চলবে)
 def monitor_website():
     global last_sent_link
-    print("Scraper started and monitoring every 5 minutes...")
+    print("Background scraper thread started...")
     
     while True:
         notices = get_latest_notices()
-        
         if notices:
             latest_notice = notices[0]
             
-            # প্রথমবার রান করার সময় শুধু লিংকটি সেভ করবে, মেসেজ পাঠাবে না (পুরানো মেসেজের স্প্যামিং এড়াতে)
             if last_sent_link is None:
                 last_sent_link = latest_notice["link"]
-                print(f"Initial setup complete. Saved latest notice link: {last_sent_link}")
+                print(f"Initial setup complete. Saved: {last_sent_link}")
             
-            # যদি নতুন কোনো নোটিশ আসে
             elif latest_notice["link"] != last_sent_link:
                 message = (
                     f"🔔 *টিএমইডি নতুন নোটিশ!* 🔔\n\n"
@@ -88,16 +89,16 @@ def monitor_website():
                     f"🔗 *লিংক:* [এখানে ক্লিক করুন]({latest_notice['link']})"
                 )
                 send_telegram_message(message)
-                print("New notice sent to Telegram!")
                 last_sent_link = latest_notice["link"]
-            else:
-                print("No new notice found.")
-        else:
-            print("Could not retrieve notices this time.")
-            
-        # ৫ মিনিট (৩০০ সেকেন্ড) পর পর চেক করার টাইম ডিলে
-        print("Waiting for 5 minutes...")
-        time.sleep(300)
+        
+        time.sleep(300) # ৫ মিনিট পর পর
 
 if __name__ == "__main__":
-    monitor_website()
+    # স্ক্র্যাপারটিকে আলাদা থ্রেডে ব্যাকগ্রাউন্ডে চালু করা
+    scraper_thread = threading.Thread(target=monitor_website)
+    scraper_thread.daemon = True
+    scraper_thread.start()
+    
+    # Render সাধারণত PORT এনভায়রনমেন্ট ভেরিয়েবল পাঠায়, সেটি ধরে সার্ভার রান করা
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
